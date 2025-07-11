@@ -818,6 +818,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """
         if not episode_data:
             episode_buffer = self.episode_buffer
+        else:
+            episode_buffer = episode_data
 
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
 
@@ -855,6 +857,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
+            # delete images for the episode
+            for key in self.meta.video_keys:
+                img_dir = self._get_image_file_path(episode_index, key, 0).parent
+                if img_dir.is_dir():
+                    shutil.rmtree(img_dir)
+
         # `meta.save_episode` be executed after encoding the videos
         self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats)
 
@@ -873,11 +881,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         parquet_files = list(self.root.rglob("*.parquet"))
         assert len(parquet_files) == self.num_episodes
-
-        # delete images
-        img_dir = self.root / "images"
-        if img_dir.is_dir():
-            shutil.rmtree(self.root / "images")
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
@@ -947,15 +950,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """
         video_paths = {}
         for key in self.meta.video_keys:
+            img_dir = self._get_image_file_path(episode_index, key, 0).parent
             video_path = self.root / self.meta.get_video_file_path(episode_index, key)
-            video_paths[key] = str(video_path)
             if video_path.is_file():
                 # Skip if video is already encoded. Could be the case when resuming data recording.
                 continue
-            img_dir = self._get_image_file_path(
-                episode_index=episode_index, image_key=key, frame_index=0
-            ).parent
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            encode_video_frames(img_dir, video_path, self.fps, self.video_backend, overwrite=True)
+            video_paths[key] = str(video_path)
 
         return video_paths
 
