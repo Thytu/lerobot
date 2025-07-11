@@ -59,6 +59,8 @@ def decode_video_frames(
         return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
+    elif backend == "h264":
+        return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, "pyav")
     else:
         raise ValueError(f"Unsupported video backend: {backend}")
 
