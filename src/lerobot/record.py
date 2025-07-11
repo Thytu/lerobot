@@ -160,6 +160,13 @@ class RecordConfig:
         return ["policy"]
 
 
+def _save_buffers(dataset: LeRobotDataset, episode_buffers: list[dict], cfg: RecordConfig):
+    log_say("Saving episodes", cfg.play_sounds)
+    for episode_buffer in episode_buffers:
+        print("Saving episode", episode_buffer["episode_index"])
+        dataset.save_episode(episode_buffer)
+
+
 @safe_stop_image_writer
 def record_loop(
     robot: Robot,
@@ -307,45 +314,63 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     listener, events = init_keyboard_listener()
 
     recorded_episodes = 0
-    while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-        log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
-        record_loop(
-            robot=robot,
-            events=events,
-            fps=cfg.dataset.fps,
-            teleop=teleop,
-            policy=policy,
-            dataset=dataset,
-            control_time_s=cfg.dataset.episode_time_s,
-            single_task=cfg.dataset.single_task,
-            display_data=cfg.display_data,
-        )
+    episode_buffers = []
 
-        # Execute a few seconds without recording to give time to manually reset the environment
-        # Skip reset for the last episode to be recorded
-        if not events["stop_recording"] and (
-            (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
-        ):
-            log_say("Reset the environment", cfg.play_sounds)
+    try:
+        while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
+            episode_index = dataset.num_episodes + len(episode_buffers)
+            dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_index)
+
+            log_say(f"Recording episode {episode_index}", cfg.play_sounds)
             record_loop(
                 robot=robot,
                 events=events,
                 fps=cfg.dataset.fps,
                 teleop=teleop,
-                control_time_s=cfg.dataset.reset_time_s,
+                policy=policy,
+                dataset=dataset,
+                control_time_s=cfg.dataset.episode_time_s,
                 single_task=cfg.dataset.single_task,
                 display_data=cfg.display_data,
             )
 
-        if events["rerecord_episode"]:
-            log_say("Re-record episode", cfg.play_sounds)
-            events["rerecord_episode"] = False
-            events["exit_early"] = False
-            dataset.clear_episode_buffer()
-            continue
+            # Execute a few seconds without recording to give time to manually reset the environment
+            # Skip reset for the last episode to be recorded
+            if not events["stop_recording"] and (
+                (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
+            ):
+                log_say("Reset the environment", cfg.play_sounds)
+                record_loop(
+                    robot=robot,
+                    events=events,
+                    fps=cfg.dataset.fps,
+                    teleop=teleop,
+                    control_time_s=cfg.dataset.reset_time_s,
+                    single_task=cfg.dataset.single_task,
+                    display_data=cfg.display_data,
+                )
 
-        dataset.save_episode()
-        recorded_episodes += 1
+            if events["rerecord_episode"]:
+                log_say("Re-record episode", cfg.play_sounds)
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
+
+            episode_buffers.append(dataset.episode_buffer)
+
+            if len(episode_buffers) >= 10:
+                _save_buffers(dataset, episode_buffers, cfg)
+                episode_buffers = []
+                log_say("Resuming recording", cfg.play_sounds, blocking=True)
+
+            recorded_episodes += 1
+
+    finally:
+        if len(episode_buffers) > 0:
+            _save_buffers(dataset, episode_buffers, cfg)
+            episode_buffers = []
+
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
 
