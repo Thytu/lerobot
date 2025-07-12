@@ -345,11 +345,11 @@ def train(cfg: TrainPipelineConfig):
                     eval_info = None
 
             if eval_info and cfg.eval.repo_id:
-                eval_metrics = {"mse": AverageMeter("mse", ":.3f")}
+                eval_metrics = {"l1_loss": AverageMeter("l1", ":.3f")}
                 eval_tracker = MetricsTracker(
                     cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step
                 )
-                eval_tracker.mse = eval_info["mse"]
+                eval_tracker.l1_loss = eval_info["l1_loss"]
                 logging.info(eval_tracker)
                 if wandb_logger:
                     wandb_logger.log_dict(eval_tracker.to_dict(), step, mode="eval")
