@@ -113,12 +113,6 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
     """Evaluates a policy on a dataset during training."""
     eval_dataset = LeRobotDataset(cfg.eval.repo_id)
 
-    # transforms = []
-    # if policy.config.dataset_stats:
-    #     transforms.append(Normalize(policy.config.dataset_stats))
-    # if transforms:
-    #     eval_dataset.set_transform(Compose(transforms))
-
     dataloader = torch.utils.data.DataLoader(
         eval_dataset,
         batch_size=cfg.eval.batch_size,
@@ -128,8 +122,7 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
 
     device = get_device_from_parameters(policy)
 
-    all_actions_pred = []
-    all_actions_gt = []
+    all_l1_losses = []
 
     for batch in tqdm(dataloader, desc="Evaluating on dataset"):
         # Move batch to device
@@ -139,22 +132,31 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
 
         # Forward pass
         with torch.inference_mode():
-            # Filter out keys that are not part of the observation.
-            obs_keys = [key for key in batch if key.startswith("observation")]
-            inference_batch = {key: batch[key] for key in obs_keys}
-            actions_pred = policy.predict_action_chunk(inference_batch)[:, 0]
+            # Get normalized predictions for the entire sequence
+            actions_pred = policy.predict_action_chunk(batch)
+            
+            # Normalize ground truth actions for comparison
+            batch = policy.normalize_targets(batch)
+            actions_gt = batch["action"]
+            
+            # Compute L1 loss with padding mask
+            l1_loss = (
+                F.l1_loss(actions_gt, actions_pred, reduction="none") 
+                * ~batch["action_is_pad"].unsqueeze(-1)
+            ).mean()
 
-        actions_gt = batch["action"]
+            all_l1_losses.append(l1_loss.item())
 
-        all_actions_pred.append(actions_pred)
-        all_actions_gt.append(actions_gt)
+    avg_l1_loss = sum(all_l1_losses) / len(all_l1_losses)
 
-    all_actions_pred = torch.cat(all_actions_pred)
-    all_actions_gt = torch.cat(all_actions_gt)
+    metrics = {"l1_loss": avg_l1_loss}
+    if policy.config.use_vae:
+        # Note: We don't compute KL loss during evaluation since it's only used 
+        # to regularize the latent space during training
+        metrics["total_loss"] = avg_l1_loss
+    else:
+        metrics["total_loss"] = avg_l1_loss
 
-    mse = F.mse_loss(all_actions_pred, all_actions_gt)
-
-    metrics = {"mse": mse.item()}
     return metrics
 
 
