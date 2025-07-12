@@ -139,7 +139,10 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
 
         # Forward pass
         with torch.inference_mode():
-            actions_pred = policy.select_action(batch)
+            # Filter out keys that are not part of the observation.
+            obs_keys = [key for key in batch if key.startswith("observation")]
+            inference_batch = {key: batch[key] for key in obs_keys}
+            actions_pred = policy.select_action(inference_batch)
 
         actions_gt = batch["action"]
 
