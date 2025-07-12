@@ -54,6 +54,9 @@ class WandBConfig:
 @dataclass
 class EvalConfig:
     n_episodes: int = 50
+    # The Hugging Face Hub repo id of the dataset to be used for evaluation. If not provided, an environment
+    # is instantiated on the fly.
+    repo_id: str | None = None
     # `batch_size` specifies the number of environments to use in a gym.vector.VectorEnv.
     batch_size: int = 50
     # `use_async_envs` specifies whether to use asynchronous environments (multiprocessing).

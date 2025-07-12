@@ -61,12 +61,14 @@ import einops
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 from termcolor import colored
 from torch import Tensor, nn
 from tqdm import trange
 
 from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.envs.factory import make_env
 from lerobot.envs.utils import add_envs_task, check_env_attributes_and_types, preprocess_observation
 from lerobot.policies.factory import make_policy
@@ -215,6 +217,94 @@ def rollout(
         policy.use_original_modules()
 
     return ret
+
+
+def eval_on_dataset(cfg: EvalPipelineConfig):
+    """Evaluate a policy on a dataset."""
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+
+    eval_dataset = LeRobotDataset(cfg.eval.repo_id)
+    policy = make_policy(cfg.policy, ds_meta=eval_dataset.meta)
+
+    # TODO(rcadene): use the same statistics as in the training
+    # eval_dataset.set_transform(load_transforms)
+
+    dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=cfg.eval.batch_size,
+        num_workers=4,  # TODO(rcadene, aliberts): use cfg.num_workers
+        pin_memory=True,
+    )
+
+    device = get_device_from_parameters(policy)
+
+    all_actions_pred = []
+    all_actions_gt = []
+
+    for batch in dataloader:
+        # Move batch to device
+        batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+
+        # Forward pass
+        with torch.inference_mode():
+            actions_pred = policy.select_action(batch)
+
+        actions_gt = batch["action"]
+
+        all_actions_pred.append(actions_pred)
+        all_actions_gt.append(actions_gt)
+
+    all_actions_pred = torch.cat(all_actions_pred)
+    all_actions_gt = torch.cat(all_actions_gt)
+
+    mse = F.mse_loss(all_actions_pred, all_actions_gt)
+
+    metrics = {"mse": mse.item()}
+    logging.info(pformat(metrics))
+
+    # Save metrics to a JSON file
+    metrics_path = cfg.output_dir / "eval_metrics.json"
+    logging.info(f"Saving metrics to {metrics_path}")
+    with metrics_path.open("w") as f:
+        json.dump(metrics, f, indent=4)
+
+
+def eval_on_env(cfg: EvalPipelineConfig):
+    """Evaluate a policy on a gym environment."""
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+
+    policy = make_policy(cfg.policy, env_cfg=cfg.env)
+
+    # Make one environment for rendering.
+    render_env = make_env(cfg.env, n_envs=1) if cfg.eval.n_episodes > 0 else None
+
+    # Make a batch of environments for evaluation.
+    eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
+
+    videos_dir = cfg.output_dir / "videos"
+
+    eval_results = eval_policy(
+        eval_env,
+        policy,
+        n_episodes=cfg.eval.n_episodes,
+        max_episodes_rendered=cfg.eval.batch_size,
+        videos_dir=videos_dir,
+    )
+
+    # Close the environments.
+    if render_env:
+        render_env.close()
+    eval_env.close()
+
+    logging.info(pformat(eval_results["metrics"]))
+
+    # Save metrics to a JSON file
+    metrics_path = cfg.output_dir / "eval_metrics.json"
+    logging.info(f"Saving metrics to {metrics_path}")
+    with metrics_path.open("w") as f:
+        json.dump(eval_results["metrics"], f, indent=4)
 
 
 def eval_policy(
@@ -459,48 +549,24 @@ def _compile_episode_data(
 
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
+    init_logging()
+
     logging.info(pformat(asdict(cfg)))
 
-    # Check device is available
-    device = get_safe_torch_device(cfg.policy.device, log=True)
+    if not cfg.output_dir.exists():
+        cfg.output_dir.mkdir(parents=True)
 
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    set_seed(cfg.seed)
+    # Save the eval config to a JSON file
+    config_path = cfg.output_dir / "eval_config.json"
+    logging.info(f"Saving eval config to {config_path}")
+    with config_path.open("w") as f:
+        json.dump(asdict(cfg), f, default=str, indent=4)
 
-    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-
-    logging.info("Making environment.")
-    env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
-
-    logging.info("Making policy.")
-
-    policy = make_policy(
-        cfg=cfg.policy,
-        env_cfg=cfg.env,
-    )
-    policy.eval()
-
-    with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
-        info = eval_policy(
-            env,
-            policy,
-            cfg.eval.n_episodes,
-            max_episodes_rendered=10,
-            videos_dir=Path(cfg.output_dir) / "videos",
-            start_seed=cfg.seed,
-        )
-    print(info["aggregated"])
-
-    # Save info
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
-        json.dump(info, f, indent=2)
-
-    env.close()
-
-    logging.info("End of eval")
+    if cfg.eval.repo_id:
+        eval_on_dataset(cfg)
+    else:
+        eval_on_env(cfg)
 
 
 if __name__ == "__main__":
-    init_logging()
     eval_main()
