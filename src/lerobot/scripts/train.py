@@ -31,6 +31,8 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.factory import resolve_delta_timestamps
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 # from lerobot.datasets.transforms import Compose, Normalize
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
@@ -111,92 +113,59 @@ def update_policy(
 
 def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPolicy):
     """Evaluates a policy on a dataset during training."""
-    eval_dataset = LeRobotDataset(cfg.eval.repo_id)
+    # Load metadata to resolve delta_timestamps
+    meta = LeRobotDatasetMetadata(cfg.eval.repo_id)
+    delta_timestamps = resolve_delta_timestamps(cfg.policy, meta)
+
+    eval_dataset = LeRobotDataset(cfg.eval.repo_id, delta_timestamps=delta_timestamps)
+
+    sampler = None
+    if hasattr(cfg.policy, "drop_n_last_frames"):
+        sampler = EpisodeAwareSampler(
+            eval_dataset.episode_data_index,
+            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            shuffle=False,
+        )
 
     dataloader = torch.utils.data.DataLoader(
         eval_dataset,
+        sampler=sampler,
         batch_size=cfg.eval.batch_size,
         num_workers=cfg.num_workers,
         pin_memory=True,
+        drop_last=False,
     )
 
     device = get_device_from_parameters(policy)
     policy.eval()  # Ensure policy is in eval mode
 
-    all_l1_losses = []
+    total_losses = []
+    l1_losses = []
+    kld_losses = []
 
-    for batch in tqdm(dataloader, desc="Evaluating on dataset"):
-        # Move batch to device
-        for key, value in batch.items():
-            if isinstance(value, torch.Tensor):
-                batch[key] = value.to(device, non_blocking=True)
+    with torch.inference_mode():
+        for batch in tqdm(dataloader, desc="Evaluating on dataset"):
+            # Move batch to device
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[key] = value.to(device, non_blocking=True)
 
-        # Forward pass
-        with torch.inference_mode():
-            # Filter out keys that are not part of the observation
-            obs_keys = [key for key in batch if key.startswith("observation")]
-            inference_batch = {key: batch[key] for key in obs_keys}
-            
-            # Get normalized predictions for the entire sequence
-            actions_pred = policy.predict_action_chunk(inference_batch)
-            
-            # Normalize ground truth actions for comparison
-            batch = policy.normalize_targets(batch)
-            actions_gt = batch["action"]
-            
-            # Ensure actions have same shape
-            if actions_gt.dim() != actions_pred.dim():
-                if actions_gt.dim() < actions_pred.dim():
-                    # If ground truth is 2D (batch_size, action_dim), add sequence dimension
-                    actions_gt = actions_gt.unsqueeze(1)
-                else:
-                    # If predictions are 2D (batch_size, action_dim), add sequence dimension
-                    actions_pred = actions_pred.unsqueeze(1)
-            
-            # Only compare up to the length of ground truth sequence
-            if actions_gt.size(1) != actions_pred.size(1):
-                seq_len = min(actions_gt.size(1), actions_pred.size(1))
-                actions_gt = actions_gt[:, :seq_len]
-                actions_pred = actions_pred[:, :seq_len]
-            
-            # Ensure action dimensions match
-            if actions_gt.size(-1) != actions_pred.size(-1):
-                # If predictions are missing dimensions, repeat the last dimension
-                if actions_gt.size(-1) > actions_pred.size(-1):
-                    actions_pred = actions_pred.unsqueeze(-1).expand(-1, -1, actions_gt.size(-1))
-                # If ground truth is missing dimensions, repeat the last dimension
-                elif actions_gt.size(-1) < actions_pred.size(-1):
-                    actions_gt = actions_gt.unsqueeze(-1).expand(-1, -1, actions_pred.size(-1))
-            
-            # Create padding mask if not available
-            if "action_is_pad" in batch:
-                padding_mask = ~batch["action_is_pad"]
-                if padding_mask.dim() < actions_gt.dim():
-                    padding_mask = padding_mask.unsqueeze(-1)
-            else:
-                # If no padding mask, assume all actions are valid
-                # Create mask with same batch and sequence dimensions as actions
-                padding_mask = torch.ones(
-                    (actions_gt.size(0), actions_gt.size(1), 1),
-                    dtype=torch.bool,
-                    device=device
-                )
-            
-            # Compute L1 loss with padding mask
-            l1_loss = (
-                F.l1_loss(actions_gt, actions_pred, reduction="none") 
-                * padding_mask
-            ).mean()
+            # Compute loss using policy.forward
+            loss, loss_dict = policy.forward(batch)
 
-            all_l1_losses.append(l1_loss.item())
+            total_losses.append(loss.item())
+            l1_losses.append(loss_dict["l1_loss"])
+            if "kld_loss" in loss_dict:
+                kld_losses.append(loss_dict["kld_loss"])
 
-    avg_l1_loss = sum(all_l1_losses) / len(all_l1_losses)
-
+    avg_total_loss = sum(total_losses) / len(total_losses) if total_losses else 0
+    avg_l1_loss = sum(l1_losses) / len(l1_losses) if l1_losses else 0
     metrics = {"l1_loss": avg_l1_loss}
-    if policy.config.use_vae:
-        # Note: We don't compute KL loss during evaluation since it's only used 
-        # to regularize the latent space during training
-        metrics["total_loss"] = avg_l1_loss
+
+    if kld_losses:
+        avg_kld_loss = sum(kld_losses) / len(kld_losses)
+        metrics["kld_loss"] = avg_kld_loss
+        metrics["total_loss"] = avg_l1_loss + avg_kld_loss * policy.config.kl_weight
     else:
         metrics["total_loss"] = avg_l1_loss
 
