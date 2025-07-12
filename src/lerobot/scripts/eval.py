@@ -69,7 +69,7 @@ from tqdm import trange
 from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.transforms import Compose, Normalize
+# from lerobot.datasets.transforms import Compose, Normalize
 from lerobot.envs.factory import make_env
 from lerobot.envs.utils import add_envs_task, check_env_attributes_and_types, preprocess_observation
 from lerobot.policies.factory import make_policy
@@ -228,11 +228,11 @@ def eval_on_dataset(cfg: EvalPipelineConfig):
     eval_dataset = LeRobotDataset(cfg.eval.repo_id)
     policy = make_policy(cfg.policy, ds_meta=eval_dataset.meta)
 
-    transforms = []
-    if policy.config.dataset_stats:
-        transforms.append(Normalize(policy.config.dataset_stats))
-    if transforms:
-        eval_dataset.set_transform(Compose(transforms))
+    # transforms = []
+    # if policy.config.dataset_stats:
+    #     transforms.append(Normalize(policy.config.dataset_stats))
+    # if transforms:
+    #     eval_dataset.set_transform(Compose(transforms))
 
     dataloader = torch.utils.data.DataLoader(
         eval_dataset,

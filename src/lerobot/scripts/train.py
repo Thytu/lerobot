@@ -31,7 +31,7 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
-from lerobot.datasets.transforms import Compose, Normalize
+# from lerobot.datasets.transforms import Compose, Normalize
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
 from lerobot.optim.factory import make_optimizer_and_scheduler
@@ -113,11 +113,11 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
     """Evaluates a policy on a dataset during training."""
     eval_dataset = LeRobotDataset(cfg.eval.repo_id)
 
-    transforms = []
-    if policy.config.dataset_stats:
-        transforms.append(Normalize(policy.config.dataset_stats))
-    if transforms:
-        eval_dataset.set_transform(Compose(transforms))
+    # transforms = []
+    # if policy.config.dataset_stats:
+    #     transforms.append(Normalize(policy.config.dataset_stats))
+    # if transforms:
+    #     eval_dataset.set_transform(Compose(transforms))
 
     dataloader = torch.utils.data.DataLoader(
         eval_dataset,
