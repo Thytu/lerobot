@@ -144,6 +144,10 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             batch = policy.normalize_targets(batch)
             actions_gt = batch["action"]
             
+            # Only compare up to the length of ground truth sequence
+            seq_len = actions_gt.size(1)
+            actions_pred = actions_pred[:, :seq_len]
+            
             # Compute L1 loss with padding mask
             l1_loss = (
                 F.l1_loss(actions_gt, actions_pred, reduction="none") 
