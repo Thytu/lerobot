@@ -37,6 +37,8 @@ class DatasetConfig:
     revision: str | None = None
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
+    # Target size for resizing images (height, width). If None, no resizing is done.
+    resize_size: tuple[int, int] | None = None
 
 
 @dataclass

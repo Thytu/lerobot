@@ -25,7 +25,7 @@ from lerobot.datasets.lerobot_dataset import (
     LeRobotDatasetMetadata,
     MultiLeRobotDataset,
 )
-from lerobot.datasets.transforms import ImageTransforms
+from lerobot.datasets.transforms import ImageTransforms, ImageTransformConfig
 
 IMAGENET_STATS = {
     "mean": [[[0.485]], [[0.456]], [[0.406]]],  # (c,1,1)
@@ -78,9 +78,20 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     Returns:
         LeRobotDataset | MultiLeRobotDataset
     """
-    image_transforms = (
-        ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
-    )
+    # Set up image transforms
+    transforms_config = cfg.dataset.image_transforms
+    
+    # Add resize transform if resize_size is specified
+    if cfg.dataset.resize_size is not None:
+        resize_transform = ImageTransformConfig(
+            weight=1.0,
+            type="Resize",
+            kwargs={"size": cfg.dataset.resize_size}
+        )
+        transforms_config.tfs["resize"] = resize_transform
+        transforms_config.enable = True
+    
+    image_transforms = ImageTransforms(transforms_config) if transforms_config.enable else None
 
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
