@@ -21,6 +21,7 @@ from typing import Any
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 from termcolor import colored
 from torch.amp import GradScaler
 from torch.optim import Optimizer
@@ -28,7 +29,9 @@ from torch.optim import Optimizer
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.transforms import Compose, Normalize
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
 from lerobot.optim.factory import make_optimizer_and_scheduler
@@ -104,6 +107,50 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPolicy):
+    """Evaluates a policy on a dataset during training."""
+    eval_dataset = LeRobotDataset(cfg.eval.repo_id)
+
+    transforms = []
+    if policy.config.dataset_stats:
+        transforms.append(Normalize(policy.config.dataset_stats))
+    if transforms:
+        eval_dataset.set_transform(Compose(transforms))
+
+    dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=cfg.eval.batch_size,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+    )
+
+    device = get_device_from_parameters(policy)
+
+    all_actions_pred = []
+    all_actions_gt = []
+
+    for batch in dataloader:
+        # Move batch to device
+        batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+
+        # Forward pass
+        with torch.inference_mode():
+            actions_pred = policy.select_action(batch)
+
+        actions_gt = batch["action"]
+
+        all_actions_pred.append(actions_pred)
+        all_actions_gt.append(actions_gt)
+
+    all_actions_pred = torch.cat(all_actions_pred)
+    all_actions_gt = torch.cat(all_actions_gt)
+
+    mse = F.mse_loss(all_actions_pred, all_actions_gt)
+
+    metrics = {"mse": mse.item()}
+    return metrics
 
 
 @parser.wrap()
@@ -246,38 +293,53 @@ def train(cfg: TrainPipelineConfig):
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
 
-        if cfg.env and is_eval_step:
+        if is_eval_step:
             step_id = get_step_identifier(step, cfg.steps)
             logging.info(f"Eval policy at step {step}")
             with (
                 torch.no_grad(),
                 torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext(),
             ):
-                eval_info = eval_policy(
-                    eval_env,
-                    policy,
-                    cfg.eval.n_episodes,
-                    videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                    max_episodes_rendered=4,
-                    start_seed=cfg.seed,
-                )
+                if cfg.eval.repo_id:
+                    eval_info = eval_on_dataset_in_training(cfg, policy)
+                elif cfg.env:
+                    eval_info = eval_policy(
+                        eval_env,
+                        policy,
+                        cfg.eval.n_episodes,
+                        videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                        max_episodes_rendered=4,
+                        start_seed=cfg.seed,
+                    )
+                else:
+                    eval_info = None
 
-            eval_metrics = {
-                "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
-                "pc_success": AverageMeter("success", ":.1f"),
-                "eval_s": AverageMeter("eval_s", ":.3f"),
-            }
-            eval_tracker = MetricsTracker(
-                cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step
-            )
-            eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
-            eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
-            eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
-            logging.info(eval_tracker)
-            if wandb_logger:
-                wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
-                wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
+            if eval_info and cfg.eval.repo_id:
+                eval_metrics = {"mse": AverageMeter("mse", ":.3f")}
+                eval_tracker = MetricsTracker(
+                    cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step
+                )
+                eval_tracker.mse = eval_info["mse"]
+                logging.info(eval_tracker)
+                if wandb_logger:
+                    wandb_logger.log_dict(eval_tracker.to_dict(), step, mode="eval")
+            elif eval_info and cfg.env:
+                eval_metrics = {
+                    "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
+                    "pc_success": AverageMeter("success", ":.1f"),
+                    "eval_s": AverageMeter("eval_s", ":.3f"),
+                }
+                eval_tracker = MetricsTracker(
+                    cfg.batch_size, dataset.num_frames, dataset.num_episodes, eval_metrics, initial_step=step
+                )
+                eval_tracker.eval_s = eval_info["metrics"].pop("eval_s")
+                eval_tracker.avg_sum_reward = eval_info["metrics"].pop("avg_sum_reward")
+                eval_tracker.pc_success = eval_info["metrics"].pop("pc_success")
+                logging.info(eval_tracker)
+                if wandb_logger:
+                    wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                    wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
+                    wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
 
     if eval_env:
         eval_env.close()

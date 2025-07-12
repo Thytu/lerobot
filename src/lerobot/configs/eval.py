@@ -34,6 +34,8 @@ class EvalPipelineConfig:
     output_dir: Path | None = None
     job_name: str | None = None
     seed: int | None = 1000
+    # Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process.
+    num_workers: int = 4
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
