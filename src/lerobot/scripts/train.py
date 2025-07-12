@@ -121,6 +121,7 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
     )
 
     device = get_device_from_parameters(policy)
+    policy.eval()  # Ensure policy is in eval mode
 
     all_l1_losses = []
 
@@ -132,8 +133,12 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
 
         # Forward pass
         with torch.inference_mode():
+            # Filter out keys that are not part of the observation
+            obs_keys = [key for key in batch if key.startswith("observation")]
+            inference_batch = {key: batch[key] for key in obs_keys}
+            
             # Get normalized predictions for the entire sequence
-            actions_pred = policy.predict_action_chunk(batch)
+            actions_pred = policy.predict_action_chunk(inference_batch)
             
             # Normalize ground truth actions for comparison
             batch = policy.normalize_targets(batch)
