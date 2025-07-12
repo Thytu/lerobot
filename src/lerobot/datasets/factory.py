@@ -15,6 +15,11 @@
 # limitations under the License.
 import logging
 from pprint import pformat
+import torchvision.transforms.v2 as v2
+from lerobot.datasets.transforms import (
+    RandomSubsetApply,
+    make_transform_from_config,
+)
 
 import torch
 
@@ -81,17 +86,34 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     # Set up image transforms
     transforms_config = cfg.dataset.image_transforms
     
-    # Add resize transform if resize_size is specified
+    # Create a list of transforms, starting with resize if specified
+    transforms_list = []
     if cfg.dataset.resize_size is not None:
-        resize_transform = ImageTransformConfig(
-            weight=1.0,
-            type="Resize",
-            kwargs={"size": cfg.dataset.resize_size}
-        )
-        transforms_config.tfs["resize"] = resize_transform
-        transforms_config.enable = True
+        transforms_list.append(v2.Resize(cfg.dataset.resize_size))
     
-    image_transforms = ImageTransforms(transforms_config) if transforms_config.enable else None
+    # Add random transforms if enabled
+    if transforms_config.enable:
+        random_transforms = []
+        weights = []
+        for tf_name, tf_cfg in transforms_config.tfs.items():
+            if tf_cfg.weight <= 0.0:
+                continue
+            random_transforms.append(make_transform_from_config(tf_cfg))
+            weights.append(tf_cfg.weight)
+            
+        n_subset = min(len(random_transforms), transforms_config.max_num_transforms)
+        if n_subset > 0:
+            transforms_list.append(
+                RandomSubsetApply(
+                    transforms=random_transforms,
+                    p=weights,
+                    n_subset=n_subset,
+                    random_order=transforms_config.random_order,
+                )
+            )
+    
+    # Create final transform
+    image_transforms = v2.Compose(transforms_list) if transforms_list else None
 
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(
