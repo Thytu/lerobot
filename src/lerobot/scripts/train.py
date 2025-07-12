@@ -148,12 +148,14 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             seq_len = actions_gt.size(1)
             actions_pred = actions_pred[:, :seq_len]
             
-            # Ensure tensors have same shape
-            if actions_gt.dim() != actions_pred.dim():
-                if actions_gt.dim() > actions_pred.dim():
-                    actions_pred = actions_pred.unsqueeze(-1)
-                else:
-                    actions_gt = actions_gt.unsqueeze(-1)
+            # Ensure actions have same shape
+            if actions_gt.shape != actions_pred.shape:
+                # If predictions are missing dimensions, repeat the last dimension
+                if actions_gt.size(-1) > actions_pred.size(-1):
+                    actions_pred = actions_pred.unsqueeze(-1).expand(-1, -1, actions_gt.size(-1))
+                # If ground truth is missing dimensions, repeat the last dimension
+                elif actions_gt.size(-1) < actions_pred.size(-1):
+                    actions_gt = actions_gt.unsqueeze(-1).expand(-1, -1, actions_pred.size(-1))
             
             # Create padding mask if not available
             if "action_is_pad" in batch:
