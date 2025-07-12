@@ -133,7 +133,9 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
 
     for batch in dataloader:
         # Move batch to device
-        batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                batch[key] = value.to(device, non_blocking=True)
 
         # Forward pass
         with torch.inference_mode():
