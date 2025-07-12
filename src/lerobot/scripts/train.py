@@ -144,12 +144,23 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             batch = policy.normalize_targets(batch)
             actions_gt = batch["action"]
             
-            # Only compare up to the length of ground truth sequence
-            seq_len = actions_gt.size(1)
-            actions_pred = actions_pred[:, :seq_len]
-            
             # Ensure actions have same shape
-            if actions_gt.shape != actions_pred.shape:
+            if actions_gt.dim() != actions_pred.dim():
+                if actions_gt.dim() < actions_pred.dim():
+                    # If ground truth is 2D (batch_size, action_dim), add sequence dimension
+                    actions_gt = actions_gt.unsqueeze(1)
+                else:
+                    # If predictions are 2D (batch_size, action_dim), add sequence dimension
+                    actions_pred = actions_pred.unsqueeze(1)
+            
+            # Only compare up to the length of ground truth sequence
+            if actions_gt.size(1) != actions_pred.size(1):
+                seq_len = min(actions_gt.size(1), actions_pred.size(1))
+                actions_gt = actions_gt[:, :seq_len]
+                actions_pred = actions_pred[:, :seq_len]
+            
+            # Ensure action dimensions match
+            if actions_gt.size(-1) != actions_pred.size(-1):
                 # If predictions are missing dimensions, repeat the last dimension
                 if actions_gt.size(-1) > actions_pred.size(-1):
                     actions_pred = actions_pred.unsqueeze(-1).expand(-1, -1, actions_gt.size(-1))
@@ -159,10 +170,12 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             
             # Create padding mask if not available
             if "action_is_pad" in batch:
-                padding_mask = ~batch["action_is_pad"].unsqueeze(-1)
+                padding_mask = ~batch["action_is_pad"]
+                if padding_mask.dim() < actions_gt.dim():
+                    padding_mask = padding_mask.unsqueeze(-1)
             else:
                 # If no padding mask, assume all actions are valid
-                padding_mask = torch.ones_like(actions_gt[:, :, 0:1], dtype=torch.bool, device=device)
+                padding_mask = torch.ones_like(actions_gt[:, :, 0:1] if actions_gt.dim() == 3 else actions_gt.unsqueeze(-1), dtype=torch.bool, device=device)
             
             # Compute L1 loss with padding mask
             l1_loss = (
