@@ -142,7 +142,7 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             # Filter out keys that are not part of the observation.
             obs_keys = [key for key in batch if key.startswith("observation")]
             inference_batch = {key: batch[key] for key in obs_keys}
-            actions_pred = policy.select_action(inference_batch)
+            actions_pred = policy.predict_action_chunk(inference_batch)[:, 0]
 
         actions_gt = batch["action"]
 
