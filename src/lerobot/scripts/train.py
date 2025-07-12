@@ -155,10 +155,17 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
                 else:
                     actions_gt = actions_gt.unsqueeze(-1)
             
+            # Create padding mask if not available
+            if "action_is_pad" in batch:
+                padding_mask = ~batch["action_is_pad"].unsqueeze(-1)
+            else:
+                # If no padding mask, assume all actions are valid
+                padding_mask = torch.ones_like(actions_gt[:, :, 0:1], dtype=torch.bool, device=device)
+            
             # Compute L1 loss with padding mask
             l1_loss = (
                 F.l1_loss(actions_gt, actions_pred, reduction="none") 
-                * ~batch["action_is_pad"].unsqueeze(-1)
+                * padding_mask
             ).mean()
 
             all_l1_losses.append(l1_loss.item())
