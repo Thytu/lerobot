@@ -131,7 +131,7 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
     all_actions_pred = []
     all_actions_gt = []
 
-    for batch in dataloader:
+    for batch in tqdm(dataloader, desc="Evaluating on dataset"):
         # Move batch to device
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
