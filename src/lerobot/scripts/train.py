@@ -148,15 +148,12 @@ def eval_on_dataset_in_training(cfg: TrainPipelineConfig, policy: PreTrainedPoli
             seq_len = actions_gt.size(1)
             actions_pred = actions_pred[:, :seq_len]
             
-            # Ensure action dimensions match
-            if actions_gt.size(-1) != actions_pred.size(-1):
-                logging.warning(
-                    f"Action dimensions mismatch: ground truth has {actions_gt.size(-1)} dimensions "
-                    f"but model predicts {actions_pred.size(-1)} dimensions. "
-                    "This likely means the model was trained on a different dataset. "
-                    "Evaluation cannot proceed."
-                )
-                return {"error": "action_dimension_mismatch"}
+            # Ensure tensors have same shape
+            if actions_gt.dim() != actions_pred.dim():
+                if actions_gt.dim() > actions_pred.dim():
+                    actions_pred = actions_pred.unsqueeze(-1)
+                else:
+                    actions_gt = actions_gt.unsqueeze(-1)
             
             # Compute L1 loss with padding mask
             l1_loss = (
