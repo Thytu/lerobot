@@ -273,9 +273,11 @@ class LeRobotDatasetMetadata:
         self.episodes[episode_index] = episode_dict
         write_episode(episode_dict, self.root)
 
-        self.episodes_stats[episode_index] = episode_stats
+        episode_stats_entry = {"episode_index": episode_index, "stats": episode_stats}
+        write_episode_stats(episode_index, episode_stats_entry, self.root)
+        self.episodes_stats[episode_index] = episode_stats_entry
+
         self.stats = aggregate_stats([self.stats, episode_stats]) if self.stats else episode_stats
-        write_episode_stats(episode_index, episode_stats, self.root)
 
     def update_video_info(self) -> None:
         """
@@ -960,6 +962,120 @@ class LeRobotDataset(torch.utils.data.Dataset):
             video_paths[key] = str(video_path)
 
         return video_paths
+
+    @classmethod
+    def merge(cls, repo_ids: list[str], new_repo_id: str, root: Path | None = None) -> "LeRobotDataset":
+        import shutil
+        import numpy as np
+        from datasets import load_dataset
+        from .utils import get_episode_data_index
+        from lerobot.datasets.compute_stats import compute_episode_stats
+
+        # Load the datasets
+        dss = [LeRobotDataset(repo_id) for repo_id in repo_ids]
+
+        # Check compatibility
+        fps = dss[0].fps
+        features = dss[0].features
+        use_videos = len(dss[0].meta.video_keys) > 0
+        for ds in dss[1:]:
+            if ds.fps != fps:
+                raise ValueError("All datasets must have the same fps")
+            if ds.features != features:
+                raise ValueError("All datasets must have the same features")
+            if (len(ds.meta.video_keys) > 0) != use_videos:
+                raise ValueError("All datasets must use the same storage method (videos or images)")
+
+        # Create new dataset
+        new_ds = cls.create(new_repo_id, fps=fps, features=features, root=root, use_videos=use_videos)
+
+        # Merge tasks
+        all_tasks = {}
+        task_remap = []
+        current_task_index = 0
+        for ds in dss:
+            remap = {}
+            for task, task_index in ds.meta.task_to_task_index.items():
+                if task not in all_tasks:
+                    all_tasks[task] = current_task_index
+                    new_ds.meta.add_task(task)
+                    current_task_index += 1
+                remap[task_index] = all_tasks[task]
+            task_remap.append(remap)
+
+        # Merge episodes
+        current_ep_index = 0
+        for ds_idx, ds in enumerate(dss):
+            for old_ep_idx in range(ds.meta.total_episodes):
+                # Load old parquet
+                old_ep_path = ds.root / ds.meta.get_data_file_path(old_ep_idx)
+                old_ep_ds = load_dataset("parquet", data_files=str(old_ep_path), split="train")
+
+                # Update episode_index
+                new_episode_index = np.full(len(old_ep_ds), current_ep_index, dtype=np.int64)
+                old_ep_ds = old_ep_ds.remove_columns("episode_index")
+                old_ep_ds = old_ep_ds.add_column("episode_index", new_episode_index.tolist())
+
+                # Update task_index
+                old_task_index = np.array(old_ep_ds["task_index"])
+                new_task_index = np.array([task_remap[ds_idx][ti] for ti in old_task_index], dtype=np.int64)
+                old_ep_ds = old_ep_ds.remove_columns("task_index")
+                old_ep_ds = old_ep_ds.add_column("task_index", new_task_index.tolist())
+
+                # Handle video/image paths
+                if use_videos:
+                    for key in ds.meta.video_keys:
+                        new_vid_path = str(new_ds.meta.get_video_file_path(current_ep_index, key))
+                        new_vid_paths = [new_vid_path] * len(old_ep_ds)
+                        if key in old_ep_ds.column_names:
+                            old_ep_ds = old_ep_ds.remove_columns(key)
+                        old_ep_ds = old_ep_ds.add_column(key, new_vid_paths)
+
+                        # Copy video file
+                        old_vid_path = ds.root / ds.meta.get_video_file_path(old_ep_idx, key)
+                        new_vid_path = new_ds.root / new_ds.meta.get_video_file_path(current_ep_index, key)
+                        new_vid_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(old_vid_path, new_vid_path)
+                else:
+                    for key in ds.meta.image_keys:
+                        frame_indices = np.array(old_ep_ds["frame_index"])
+                        new_paths = [str(new_ds._get_image_file_path(current_ep_index, key, fi)) for fi in frame_indices]
+                        if key in old_ep_ds.column_names:
+                            old_ep_ds = old_ep_ds.remove_columns(key)
+                        old_ep_ds = old_ep_ds.add_column(key, new_paths)
+
+                        # Copy image directory
+                        old_img_dir = ds.root / f"images/{key}/episode_{old_ep_idx:06d}"
+                        new_img_dir = new_ds.root / f"images/{key}/episode_{current_ep_index:06d}"
+                        if old_img_dir.exists():
+                            shutil.copytree(old_img_dir, new_img_dir, dirs_exist_ok=True)
+
+                # Save new parquet
+                new_ep_path = new_ds.root / new_ds.meta.get_data_file_path(current_ep_index)
+                new_ep_path.parent.mkdir(parents=True, exist_ok=True)
+                old_ep_ds.to_parquet(new_ep_path)
+
+                # Compute or get stats
+                ep_stats_entry = ds.meta.episodes_stats[old_ep_idx]
+                if isinstance(ep_stats_entry, dict) and "stats" in ep_stats_entry:
+                    ep_stats = ep_stats_entry["stats"]
+                else:
+                    ep_stats = ep_stats_entry
+
+                # Get tasks
+                unique_old_task_indices = set(old_task_index)
+                episode_tasks = [ds.meta.tasks[ti] for ti in unique_old_task_indices]
+
+                # Save to meta
+                new_ds.meta.save_episode(current_ep_index, len(old_ep_ds), episode_tasks, ep_stats)
+
+                current_ep_index += 1
+
+        # Reload hf_dataset and set episode_data_index
+        new_ds.hf_dataset = new_ds.load_hf_dataset()
+        new_ds.episode_data_index = get_episode_data_index(new_ds.meta.episodes)
+
+        return new_ds
 
     @classmethod
     def create(
