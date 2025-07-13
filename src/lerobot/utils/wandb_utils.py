@@ -70,6 +70,25 @@ class WandBLogger:
         os.environ["WANDB_SILENT"] = "True"
         import wandb
 
+        wandb_tags = []
+        if isinstance(cfg.dataset.repo_id, str):
+            tag = f"dataset:{cfg.dataset.repo_id}"
+            if 1 <= len(tag) <= 64:
+                wandb_tags.append(tag)
+            else:
+                logging.warning(f"Truncating invalid tag '{tag}' (length {len(tag)} not in 1-64)")
+                wandb_tags.append(tag[:64])
+        else:
+            for repo in cfg.dataset.repo_id:
+                tag = f"dataset:{repo}"
+                if 1 <= len(tag) <= 64:
+                    wandb_tags.append(tag)
+                else:
+                    logging.warning(f"Truncating invalid tag '{tag}' (length {len(tag)} not in 1-64)")
+                    wandb_tags.append(tag[:64])
+        wandb_tags.append(f"policy:{cfg.policy.type}")
+        wandb_tags.append(f"seed:{cfg.seed}")
+
         wandb_run_id = (
             cfg.wandb.run_id
             if cfg.wandb.run_id
@@ -83,7 +102,7 @@ class WandBLogger:
             entity=self.cfg.entity,
             name=self.job_name,
             notes=self.cfg.notes,
-            tags=cfg_to_group(cfg, return_list=True),
+            tags=wandb_tags,
             dir=self.log_dir,
             config=cfg.to_dict(),
             # TODO(rcadene): try set to True
