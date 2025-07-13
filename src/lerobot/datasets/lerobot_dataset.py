@@ -110,7 +110,7 @@ class LeRobotDatasetMetadata:
             self.episodes_stats = backward_compatible_episodes_stats(self.stats, self.episodes)
         else:
             self.episodes_stats = load_episodes_stats(self.root)
-            self.stats = aggregate_stats(list(self.episodes_stats.values()))
+            self.stats = aggregate_stats([ep['stats'] for ep in self.episodes_stats.values()])
 
     def pull_from_repo(
         self,
