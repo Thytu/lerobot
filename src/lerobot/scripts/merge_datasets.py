@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+import huggingface_hub
+
 from lerobot.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.utils import (
@@ -129,6 +131,13 @@ def merge_datasets(repo_id1, repo_id2, new_repo_id):
         )
         new_data_dir.mkdir(parents=True, exist_ok=True)
         new_parquet_path = new_data_dir / f"episode_{new_ep_idx:06d}.parquet"
+        if not old_parquet_path.exists():
+            huggingface_hub.hf_hub_download(
+                repo_id=repo_id1,
+                filename=str(old_parquet_path.relative_to(meta1.root)),
+                repo_type="dataset",
+                local_dir=meta1.root,
+            )
         shutil.copy(old_parquet_path, new_parquet_path)
 
         # Copy video files
@@ -144,8 +153,19 @@ def merge_datasets(repo_id1, repo_id2, new_repo_id):
             )
             new_video_dir.mkdir(parents=True, exist_ok=True)
             new_video_path = new_video_dir / f"episode_{new_ep_idx:06d}.mp4"
-            if old_video_path.exists():
-                shutil.copy(old_video_path, new_video_path)
+            old_video_rel_path = str(old_video_path.relative_to(meta1.root))
+            if not old_video_path.exists():
+                try:
+                    huggingface_hub.hf_hub_download(
+                        repo_id=repo_id1,
+                        filename=old_video_rel_path,
+                        repo_type="dataset",
+                        local_dir=meta1.root,
+                    )
+                except huggingface_hub.utils.HfHubHTTPError:
+                    print(f"Video file {old_video_rel_path} not found on hub, skipping.")
+                    continue
+            shutil.copy(old_video_path, new_video_path)
 
     # Process dataset 2
     print(f"Processing dataset 2: {repo_id2}")
@@ -171,6 +191,13 @@ def merge_datasets(repo_id1, repo_id2, new_repo_id):
 
         # Modify and copy parquet file
         old_parquet_path = meta2.root / meta2.get_data_file_path(old_ep_idx)
+        if not old_parquet_path.exists():
+            huggingface_hub.hf_hub_download(
+                repo_id=repo_id2,
+                filename=str(old_parquet_path.relative_to(meta2.root)),
+                repo_type="dataset",
+                local_dir=meta2.root,
+            )
         df = pd.read_parquet(old_parquet_path)
 
         df["episode_index"] = new_ep_idx
@@ -202,8 +229,19 @@ def merge_datasets(repo_id1, repo_id2, new_repo_id):
             )
             new_video_dir.mkdir(parents=True, exist_ok=True)
             new_video_path = new_video_dir / f"episode_{new_ep_idx:06d}.mp4"
-            if old_video_path.exists():
-                shutil.copy(old_video_path, new_video_path)
+            old_video_rel_path = str(old_video_path.relative_to(meta2.root))
+            if not old_video_path.exists():
+                try:
+                    huggingface_hub.hf_hub_download(
+                        repo_id=repo_id2,
+                        filename=old_video_rel_path,
+                        repo_type="dataset",
+                        local_dir=meta2.root,
+                    )
+                except huggingface_hub.utils.HfHubHTTPError:
+                    print(f"Video file {old_video_rel_path} not found on hub.")
+                    raise
+            shutil.copy(old_video_path, new_video_path)
 
     # 6. Finalize and write metadata
     print("Finalizing metadata...")
@@ -247,7 +285,7 @@ def merge_datasets(repo_id1, repo_id2, new_repo_id):
 
 
 if __name__ == "__main__":
-    repo_id1 = "Thytu/so101-object-in-box_v0.1"
-    repo_id2 = "Thytu/so101-object-in-box_v0.1_multi-shot"
-    new_repo_id = "Thytu/so101-object-in-box_v0.2-b"
+    repo_id1 = "Thytu/so101-object-in-box_v0.0"
+    repo_id2 = "Thytu/so101-object-in-box_v0.3"
+    new_repo_id = "Thytu/so101-object-in-box_v0.3x0.0"
     merge_datasets(repo_id1, repo_id2, new_repo_id)
