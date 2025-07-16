@@ -248,10 +248,12 @@ def record_loop(
 
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset.
-        sent_action = robot.send_action(action)
+        robot.send_action(action)
+        # sent_action = robot.send_action(action)
 
         if dataset is not None:
-            action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
+            action_frame = build_dataset_frame(dataset.features, action, prefix="action")
+            # action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
             dataset.add_frame(frame, task=single_task)
 
@@ -359,7 +361,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
             episode_buffers.append(dataset.episode_buffer)
 
-            if len(episode_buffers) >= 10:
+            if len(episode_buffers) >= 50:
                 _save_buffers(dataset, episode_buffers, cfg)
                 episode_buffers = []
                 log_say("Resuming recording", cfg.play_sounds, blocking=True)
